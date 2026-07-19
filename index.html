@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>雪山飞驰 · 滑雪模拟器</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0a1526; }
+    body { font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; user-select: none; }
+    #app { position: fixed; inset: 0; }
+    canvas { display: block; }
+
+    .overlay {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; z-index: 10;
+      background: radial-gradient(ellipse at 50% 30%, rgba(30,60,110,.55), rgba(6,14,30,.82));
+      backdrop-filter: blur(3px);
+      transition: opacity .4s ease;
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; }
+
+    .title {
+      font-size: 64px; font-weight: 800; color: #fff; letter-spacing: 10px;
+      text-shadow: 0 4px 24px rgba(80,160,255,.6), 0 2px 0 rgba(0,60,120,.8);
+      margin-bottom: 6px;
+    }
+    .subtitle { color: #bcd8ff; font-size: 17px; letter-spacing: 6px; margin-bottom: 44px; }
+
+    .cards { display: flex; gap: 28px; margin-bottom: 40px; }
+    .card {
+      width: 220px; padding: 26px 20px 22px; border-radius: 18px; cursor: pointer;
+      background: linear-gradient(160deg, rgba(255,255,255,.13), rgba(255,255,255,.05));
+      border: 2px solid rgba(160,200,255,.35);
+      text-align: center; color: #fff; transition: all .18s ease;
+    }
+    .card:hover {
+      transform: translateY(-6px) scale(1.03);
+      border-color: #8fd0ff; background: linear-gradient(160deg, rgba(120,180,255,.25), rgba(255,255,255,.08));
+      box-shadow: 0 12px 40px rgba(60,140,255,.35);
+    }
+    .card .icon { font-size: 64px; line-height: 1; margin-bottom: 14px; filter: drop-shadow(0 4px 8px rgba(0,0,0,.4)); }
+    .card h3 { font-size: 24px; margin-bottom: 8px; letter-spacing: 3px; }
+    .card p { font-size: 13px; color: #a9c8ee; line-height: 1.7; }
+
+    .controls-hint {
+      color: #9db8dc; font-size: 14px; line-height: 2.1; text-align: center;
+    }
+    .controls-hint b {
+      display: inline-block; min-width: 26px; padding: 1px 8px; margin: 0 3px;
+      background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.3);
+      border-radius: 6px; color: #fff; font-size: 12px;
+    }
+
+    /* HUD */
+    #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; }
+    #hud.on { display: block; }
+    .hud-top {
+      position: absolute; top: 18px; left: 0; right: 0;
+      display: flex; justify-content: center; gap: 34px;
+    }
+    .stat { text-align: center; color: #fff; text-shadow: 0 2px 8px rgba(0,30,80,.8); }
+    .stat .v { font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .stat .l { font-size: 12px; color: #cfe4ff; letter-spacing: 3px; margin-top: 2px; }
+    #speedRing {
+      position: absolute; right: 26px; bottom: 26px; width: 120px; height: 120px;
+      color: #fff; text-align: center;
+    }
+    #speedRing svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+    #speedRing .num { position: absolute; inset: 0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-shadow: 0 2px 8px rgba(0,30,80,.8);}
+    #speedRing .num .v { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    #speedRing .num .u { font-size: 11px; color: #cfe4ff; }
+
+    #toast {
+      position: absolute; top: 34%; left: 0; right: 0; text-align: center;
+      font-size: 30px; font-weight: 800; color: #ffe066;
+      text-shadow: 0 2px 12px rgba(120,60,0,.6); opacity: 0;
+      transition: opacity .2s, transform .2s;
+    }
+    #toast.pop { opacity: 1; transform: translateY(-12px); }
+
+    #combo {
+      position: absolute; top: 20px; right: 30px; color: #ffe066; font-weight: 800;
+      font-size: 20px; text-shadow: 0 2px 8px rgba(0,0,0,.5);
+    }
+
+    /* Game-over */
+    #gameover .panel {
+      background: linear-gradient(165deg, rgba(20,40,80,.92), rgba(8,16,34,.95));
+      border: 1px solid rgba(140,190,255,.3); border-radius: 20px;
+      padding: 42px 60px; text-align: center; color: #fff;
+      box-shadow: 0 20px 80px rgba(0,0,0,.5);
+    }
+    #gameover h2 { font-size: 40px; letter-spacing: 8px; margin-bottom: 24px; }
+    #gameover .rows { display: flex; gap: 40px; justify-content: center; margin-bottom: 30px; }
+    #gameover .rows .v { font-size: 32px; font-weight: 800; color: #8fd0ff; }
+    #gameover .rows .l { font-size: 13px; color: #9db8dc; margin-top: 4px; letter-spacing: 2px; }
+    #newBest { color: #ffe066; font-size: 15px; margin-bottom: 18px; display: none; }
+    .btn {
+      pointer-events: auto; cursor: pointer; display: inline-block;
+      padding: 12px 38px; border-radius: 12px; border: none; font-size: 17px;
+      font-weight: 700; letter-spacing: 3px; color: #06294f;
+      background: linear-gradient(180deg, #b8e2ff, #6fb8f8);
+      box-shadow: 0 6px 24px rgba(90,170,255,.4); transition: transform .15s;
+      margin: 0 8px;
+    }
+    .btn:hover { transform: scale(1.05); }
+    .btn.ghost { background: transparent; color: #bcd8ff; border: 1px solid rgba(160,200,255,.4); box-shadow: none; }
+
+    #loading { color: #bcd8ff; font-size: 15px; letter-spacing: 4px; margin-top: 10px; }
+    .credit { position: fixed; bottom: 10px; right: 14px; color: rgba(190,215,255,.4); font-size: 11px; z-index: 11; }
+    #muteBtn {
+      position: fixed; left: 18px; bottom: 16px; z-index: 6; cursor: pointer;
+      color: rgba(255,255,255,.75); font-size: 20px; background: rgba(10,25,50,.4);
+      border: 1px solid rgba(160,200,255,.25); border-radius: 10px; padding: 6px 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div class="hud-top">
+      <div class="stat"><div class="v" id="hudDist">0</div><div class="l">滑行距离 (m)</div></div>
+      <div class="stat"><div class="v" id="hudScore">0</div><div class="l">得分</div></div>
+    </div>
+    <div id="combo"></div>
+    <div id="toast"></div>
+    <div id="speedRing">
+      <svg viewBox="0 0 120 120">
+        <circle cx="60" cy="60" r="52" fill="rgba(8,20,44,.45)" stroke="rgba(255,255,255,.18)" stroke-width="7"/>
+        <circle id="speedArc" cx="60" cy="60" r="52" fill="none" stroke="#6fd0ff" stroke-width="7"
+                stroke-linecap="round" stroke-dasharray="326.7" stroke-dashoffset="326.7"/>
+      </svg>
+      <div class="num"><div class="v" id="hudSpeed">0</div><div class="u">km/h</div></div>
+    </div>
+  </div>
+
+  <!-- 开始界面 -->
+  <div id="menu" class="overlay">
+    <div class="title">雪山飞驰</div>
+    <div class="subtitle">SNOW RUSH · 无尽滑雪</div>
+    <div class="cards">
+      <div class="card" id="pickSki">
+        <div class="icon">⛷️</div>
+        <h3>双板滑雪</h3>
+        <p>速度更快 · 直线稳定<br>转向平稳，适合追求极速</p>
+      </div>
+      <div class="card" id="pickBoard">
+        <div class="icon">🏂</div>
+        <h3>单板滑雪</h3>
+        <p>转向灵活 · 刻滑走刃<br>操控敏捷，适合穿林绕桩</p>
+      </div>
+    </div>
+    <div class="controls-hint">
+      <b>←</b><b>→</b> 或 <b>A</b><b>D</b> 转向&nbsp;&nbsp;&nbsp;<b>↓</b>/<b>S</b> 刹车&nbsp;&nbsp;&nbsp;<b>空格</b> 跳跃&nbsp;&nbsp;&nbsp;<b>Shift</b> 压低加速<br>
+      穿过 <span style="color:#ff8a8a">旗门</span> +100 分 · 收集 <span style="color:#aee6ff">雪花</span> +10 分 · 空中滞空有额外奖励 · 撞上树木岩石则结束
+    </div>
+    <div id="loading">模型加载中…</div>
+  </div>
+
+  <!-- 结算界面 -->
+  <div id="gameover" class="overlay hidden">
+    <div class="panel">
+      <h2 id="goTitle">摔倒了！</h2>
+      <div class="rows">
+        <div><div class="v" id="goDist">0 m</div><div class="l">滑行距离</div></div>
+        <div><div class="v" id="goScore">0</div><div class="l">得分</div></div>
+        <div><div class="v" id="goMax">0</div><div class="l">最高时速</div></div>
+      </div>
+      <div id="newBest">🏆 新纪录！</div>
+      <button class="btn" id="btnRetry">再滑一次 (R)</button>
+      <button class="btn ghost" id="btnMenu">换个装备</button>
+    </div>
+  </div>
+
+  <div id="muteBtn" title="静音 (M)">🔊</div>
+  <div class="credit">3D 素材：Kenney.nl Holiday Kit (CC0)</div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
