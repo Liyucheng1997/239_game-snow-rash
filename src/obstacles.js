@@ -15,7 +15,7 @@ export async function loadModels() {
   const models = {};
   await Promise.all(
     MODEL_LIST.map(async (name) => {
-      const gltf = await loader.loadAsync(`/models/${name}.glb`);
+      const gltf = await loader.loadAsync(`models/${name}.glb`);
       const scene = gltf.scene;
       scene.traverse((o) => {
         if (o.isMesh) {
