@@ -19,6 +19,8 @@
       transition: opacity .4s ease;
     }
     .overlay.hidden { opacity: 0; pointer-events: none; }
+    #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 4;
+      background: radial-gradient(ellipse at 50% 55%, rgba(0,0,0,0) 55%, rgba(10,25,50,.28) 100%); }
 
     .title {
       font-size: 64px; font-weight: 800; color: #fff; letter-spacing: 10px;
@@ -118,6 +120,7 @@
 </head>
 <body>
   <div id="app"></div>
+  <div id="vignette"></div>
 
   <!-- HUD -->
   <div id="hud">
@@ -155,7 +158,8 @@
     </div>
     <div class="controls-hint">
       <b>←</b><b>→</b> 或 <b>A</b><b>D</b> 转向&nbsp;&nbsp;&nbsp;<b>↓</b>/<b>S</b> 刹车&nbsp;&nbsp;&nbsp;<b>空格</b> 跳跃&nbsp;&nbsp;&nbsp;<b>Shift</b> 压低加速<br>
-      穿过 <span style="color:#ff8a8a">旗门</span> +100 分 · 收集 <span style="color:#aee6ff">雪花</span> +10 分 · 空中滞空有额外奖励 · 撞上树木岩石则结束
+      穿过 <span style="color:#ff8a8a">旗门</span> +100 分 · 收集 <span style="color:#aee6ff">雪花</span> +10 分 · 空中滞空有额外奖励 · 撞上树木岩石则结束<br>
+      <span style="color:#7f9dc4;font-size:12px">双板：刻滑内倾 / 换弯点杖 / 犁式刹车 / 收杖 tuck &nbsp;·&nbsp; 单板：前刃后刃换刃 / 横板刹车 / 空中 Indy 抓板</span>
     </div>
     <div id="loading">模型加载中…</div>
   </div>

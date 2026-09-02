@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { Terrain, groundY, groundNormal } from './terrain.js';
+import { Terrain, groundY, groundNormal, SLOPE } from './terrain.js';
 import { Player } from './player.js';
-import { loadModels, ObstacleManager } from './obstacles.js';
+import { loadModels, ObstacleManager, Forest } from './obstacles.js';
 import { Snowfall, SnowSpray, Trail, makeSky, makeMountains } from './effects.js';
 import { GameAudio } from './audio.js';
 
@@ -13,13 +13,13 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.22;
+renderer.toneMappingExposure = 1.15;
 app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xd6e2ef, 70, 430);
+scene.fog = new THREE.FogExp2(0xdde6f1, 0.0011);
 
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 2000);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 3000);
 camera.position.set(0, 8, 14);
 
 window.addEventListener('resize', () => {
@@ -28,22 +28,24 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// 光照
-const hemi = new THREE.HemisphereLight(0xbdd6f5, 0xe8ecf5, 0.95);
+// 光照：低角度暖阳 + 蓝天/雪地半球光
+const SUN_DIR = new THREE.Vector3(0.55, 0.62, 0.42).normalize();
+const hemi = new THREE.HemisphereLight(0xb9d4f5, 0xf0f3f8, 0.85);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff2dd, 2.4);
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.6);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -70; sun.shadow.camera.right = 70;
-sun.shadow.camera.top = 70; sun.shadow.camera.bottom = -70;
+sun.shadow.camera.left = -55; sun.shadow.camera.right = 55;
+sun.shadow.camera.top = 55; sun.shadow.camera.bottom = -55;
 sun.shadow.camera.near = 1; sun.shadow.camera.far = 260;
-sun.shadow.bias = -0.0004;
-sun.shadow.normalBias = 0.15;
+sun.shadow.bias = -0.0003;
+sun.shadow.normalBias = 0.12;
 scene.add(sun, sun.target);
 
-const sky = makeSky(scene);
+const sky = makeSky(scene, SUN_DIR);
 const mountains = makeMountains(scene);
-const terrain = new Terrain(scene);
+const terrain = new Terrain(scene, SUN_DIR);
+const forest = new Forest(scene);
 const snowfall = new Snowfall(scene);
 const spray = new SnowSpray(scene);
 const audio = new GameAudio();
@@ -66,18 +68,17 @@ const G = {
   player: null,
   obstacles: null,
   trails: [],
-  // 物理
   pos: new THREE.Vector3(0, 0, 0),
   heading: 0,           // 0 = 正下坡(-Z)
   speed: 0,
   vy: 0,
   grounded: true,
   airTime: 0,
-  // 计分
   score: 0,
   maxKmh: 0,
   crashT: 0,
   time: 0,
+  steerCur: 0,
 };
 
 const MODE_PARAMS = {
@@ -123,19 +124,19 @@ function startGame(mode) {
   G.score = 0;
   G.maxKmh = 0;
   G.crashT = 0;
+  G.steerCur = 0;
 
   if (G.player) scene.remove(G.player.root);
   G.player = new Player(scene, mode);
 
   if (G.obstacles) for (const it of G.obstacles.items) it.obj && scene.remove(it.obj);
   G.obstacles = new ObstacleManager(scene, G.models);
-  // 初始地形铺障碍（起点前 60m 留出安全区）
   for (let z = -60; z > -660; z -= 90) G.obstacles.populate(z, z - 90, difficulty(-z));
 
   for (const t of G.trails) scene.remove(t.mesh);
   G.trails = mode === 'ski'
-    ? [new Trail(scene, 0.1), new Trail(scene, 0.1)]
-    : [new Trail(scene, 0.32)];
+    ? [new Trail(scene, 0.11), new Trail(scene, 0.11)]
+    : [new Trail(scene, 0.3)];
 
   ui.menu.classList.add('hidden');
   ui.gameover.classList.add('hidden');
@@ -181,10 +182,9 @@ $('btnMenu').addEventListener('click', () => {
 const _dir = new THREE.Vector3();
 const _side = new THREE.Vector3();
 const _n = new THREE.Vector3();
-const _nLocal = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
-const _up = new THREE.Vector3(0, 1, 0);
-const _q = new THREE.Quaternion();
+const _tmp2 = new THREE.Vector3();
+function _tmp2Set(x, y, z) { return _tmp2.set(x, y, z); }
 
 function headingDir(out) {
   return out.set(-Math.sin(G.heading), 0, -Math.cos(G.heading));
@@ -192,9 +192,12 @@ function headingDir(out) {
 
 function updatePlaying(dt) {
   const P = MODE_PARAMS[G.mode];
-  const steer = (keys['ArrowLeft'] || keys['KeyA'] ? 1 : 0) - (keys['ArrowRight'] || keys['KeyD'] ? 1 : 0);
+  const steerIn = (keys['ArrowLeft'] || keys['KeyA'] ? 1 : 0) - (keys['ArrowRight'] || keys['KeyD'] ? 1 : 0);
   const brake = keys['ArrowDown'] || keys['KeyS'] ? 1 : 0;
   const tuck = keys['ShiftLeft'] || keys['ShiftRight'] ? 1 : 0;
+  // 转向输入做少量平滑，避免姿态抽动
+  G.steerCur += (steerIn - G.steerCur) * (1 - Math.exp(-14 * dt));
+  const steer = Math.abs(G.steerCur) < 0.02 ? 0 : G.steerCur;
 
   headingDir(_dir);
   _side.set(-_dir.z, 0, _dir.x);
@@ -202,25 +205,21 @@ function updatePlaying(dt) {
   const speed01 = Math.min(1, G.speed / 38);
 
   if (G.grounded) {
-    // 沿坡度的重力分量（投影到航向）
     const e = 0.7;
     const gx = (groundY(G.pos.x + e, G.pos.z) - groundY(G.pos.x - e, G.pos.z)) / (2 * e);
     const gz = (groundY(G.pos.x, G.pos.z + e) - groundY(G.pos.x, G.pos.z - e)) / (2 * e);
     let acc = -9.8 * (gx * _dir.x + gz * _dir.z);
-    // 阻力
     const d2 = tuck ? P.tuckDrag2 : P.drag2;
     acc -= 0.25 + d2 * G.speed * G.speed;
     if (brake) acc -= 9 + G.speed * 0.15;
     G.speed = Math.max(0, G.speed + acc * dt);
-    if (G.speed < 2 && !brake) G.speed = Math.min(2, G.speed + 2 * dt); // 起步推一把
+    if (G.speed < 2 && !brake) G.speed = Math.min(2, G.speed + 2 * dt);
 
-    // 转向（速度越快转向响应越足，同时刻滑损耗速度）
     const turnEff = Math.min(1, G.speed / 9);
-    G.heading += steer * P.turnRate * turnEff * dt;
+    G.heading += steerIn * P.turnRate * turnEff * dt;
     G.heading = THREE.MathUtils.clamp(G.heading, -1.25, 1.25);
-    G.speed -= Math.abs(steer) * P.carveDrag * G.speed * 0.35 * dt;
+    G.speed -= Math.abs(steerIn) * P.carveDrag * G.speed * 0.35 * dt;
 
-    // 跳跃
     if (keys['Space']) {
       G.vy = 5.2 + G.speed * 0.07;
       G.grounded = false;
@@ -233,7 +232,6 @@ function updatePlaying(dt) {
     G.airTime += dt;
   }
 
-  // 位移
   headingDir(_dir);
   G.pos.x += _dir.x * G.speed * dt;
   G.pos.z += _dir.z * G.speed * dt;
@@ -245,10 +243,11 @@ function updatePlaying(dt) {
   } else {
     G.pos.y += G.vy * dt;
     if (G.pos.y <= gy) {
-      // 落地
       G.pos.y = gy;
       G.grounded = true;
-      spray.emit(_tmp.copy(G.pos), _tmp2Set(-_dir.x * 2, 2.5, -_dir.z * 2), 20, 2.4);
+      const impact = Math.min(1.6, 0.4 + G.airTime * 0.9);
+      G.player.land(impact);
+      spray.emit(_tmp.copy(G.pos), _tmp2Set(-_dir.x * 2, 2.5, -_dir.z * 2), Math.round(14 + impact * 14), 2.6, 0.7);
       if (G.airTime > 0.6) {
         const bonus = Math.round(G.airTime * 120);
         G.score += bonus;
@@ -283,7 +282,7 @@ function updatePlaying(dt) {
       if (d2 < it.r * it.r && heightAbove < 3) {
         G.score += 10;
         audio.ding();
-        spray.emit(_tmp.copy(it.obj.position), _tmp2Set(0, 3, 0), 8, 1.6);
+        spray.emit(_tmp.copy(it.obj.position), _tmp2Set(0, 3, 0), 8, 1.6, 0.4);
         scene.remove(it.obj);
         G.obstacles.items.splice(i, 1);
       }
@@ -296,7 +295,7 @@ function updatePlaying(dt) {
         G.grounded = false;
         G.airTime = 0;
         audio.whoosh();
-        spray.emit(_tmp.copy(G.pos), _tmp2Set(0, 4, 0), 16, 2.5);
+        spray.emit(_tmp.copy(G.pos), _tmp2Set(0, 4, 0), 16, 2.5, 0.7);
       }
       continue;
     }
@@ -313,26 +312,28 @@ function updatePlaying(dt) {
   if (G.grounded && G.speed > 3) {
     const carve = Math.abs(steer);
     if (carve > 0.3 || brake) {
-      const rear = _tmp.copy(G.pos).addScaledVector(_dir, -0.9);
+      const rear = _tmp.copy(G.pos).addScaledVector(_dir, -0.9).addScaledVector(_side, -steer * 0.3);
       rear.y = groundY(rear.x, rear.z) + 0.1;
       spray.emit(
         rear,
-        _tmp2Set(_side.x * steer * 4 - _dir.x * 2, 2 + speed01 * 2, _side.z * steer * 4 - _dir.z * 2),
+        _tmp2Set(_side.x * steer * 4.5 - _dir.x * 2, 1.8 + speed01 * 2.5, _side.z * steer * 4.5 - _dir.z * 2),
         Math.ceil(1 + speed01 * 3 + brake * 2),
-        1.8
+        1.8 + speed01,
+        0.34 + speed01 * 0.2
       );
     }
-    // 尾迹
+    const ws = 1 + carve * 0.8 + brake * 1.2;
     if (G.mode === 'ski') {
-      for (const [t, off] of [[G.trails[0], -0.15], [G.trails[1], 0.15]]) {
+      const stance = brake ? 0.24 : 0.17;
+      for (const [t, off] of [[G.trails[0], -stance], [G.trails[1], stance]]) {
         const c = _tmp.copy(G.pos).addScaledVector(_side, off);
         c.y = groundY(c.x, c.z);
-        t.push(c, _side);
+        t.push(c, _side, ws);
       }
     } else {
       const c = _tmp.copy(G.pos);
       c.y = groundY(c.x, c.z);
-      G.trails[0].push(c, _side);
+      G.trails[0].push(c, _side, 0.6 + carve * 0.6 + brake * 1.5);
     }
   }
 
@@ -340,16 +341,11 @@ function updatePlaying(dt) {
   const pl = G.player;
   pl.root.position.copy(G.pos);
   pl.root.rotation.y = G.heading;
-  if (G.grounded) {
-    groundNormal(G.pos.x, G.pos.z, _n);
-    _nLocal.copy(_n).applyAxisAngle(_up, -G.heading);
-    _q.setFromUnitVectors(_up, _nLocal);
-    pl.tilt.quaternion.slerp(_q, 1 - Math.pow(0.0005, dt));
-  } else {
-    _q.identity();
-    pl.tilt.quaternion.slerp(_q, 1 - Math.pow(0.01, dt));
-  }
-  pl.pose(steer, tuck ? 1 : brake ? 0.35 : 0.12, !G.grounded, speed01, dt);
+  pl.update({
+    steer, brake, tuck: !!tuck, air: !G.grounded, speed01,
+    normal: G.grounded ? groundNormal(G.pos.x, G.pos.z, _n) : null,
+    heading: G.heading, dt,
+  });
 
   // ---- 计分与 HUD ----
   const kmh = G.speed * 3.6;
@@ -366,34 +362,37 @@ function updatePlaying(dt) {
   // ---- 世界流转 ----
   const fresh = terrain.update(G.pos.z);
   if (fresh) G.obstacles.populate(fresh.zTop, fresh.zBottom, difficulty(-G.pos.z));
+  forest.update(G.pos.z);
   G.obstacles.cull(G.pos.z);
 }
-
-const _tmp2 = new THREE.Vector3();
-function _tmp2Set(x, y, z) { return _tmp2.set(x, y, z); }
 
 // ---------- 摄像机 ----------
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 10, 18);
+let camRoll = 0;
 function updateCamera(dt) {
   const speed01 = Math.min(1, G.speed / 38);
   headingDir(_dir);
+  _side.set(-_dir.z, 0, _dir.x);
   if (G.state === 'playing' || G.state === 'crashed') {
-    const back = G.state === 'crashed' ? 10 : 8.2 + speed01 * 2.2;
-    _tmp.copy(G.pos).addScaledVector(_dir, -back);
-    _tmp.y = Math.max(G.pos.y + 3.2 + speed01 * 0.8, groundY(_tmp.x, _tmp.z) + 1.6);
+    const back = G.state === 'crashed' ? 8 : 5.6 + speed01 * 2.2;
+    _tmp.copy(G.pos).addScaledVector(_dir, -back).addScaledVector(_side, -G.steerCur * 0.8);
+    _tmp.y = Math.max(G.pos.y + 2.3 + speed01 * 0.8, groundY(_tmp.x, _tmp.z) + 1.4);
     const k = 1 - Math.pow(0.0008, dt);
     camPos.lerp(_tmp, k);
     camera.position.copy(camPos);
-    camTarget.lerp(_tmp.copy(G.pos).addScaledVector(_dir, 6).setY(G.pos.y + 1.2), k);
+    camTarget.lerp(_tmp.copy(G.pos).addScaledVector(_dir, 6).setY(G.pos.y + 1.1), k);
     camera.lookAt(camTarget);
-    const fovT = 62 + speed01 * 16;
+    // 随转向轻微侧滚，强化压弯感
+    const rollT = G.state === 'playing' ? -G.steerCur * 0.045 * (0.4 + speed01) : 0;
+    camRoll += (rollT - camRoll) * (1 - Math.pow(0.01, dt));
+    camera.rotateZ(camRoll);
+    const fovT = 60 + speed01 * 17;
     camera.fov += (fovT - camera.fov) * (1 - Math.pow(0.001, dt));
     camera.updateProjectionMatrix();
   } else {
-    // 菜单：环绕镜头
     const t = G.time * 0.12;
-    camera.position.set(Math.sin(t) * 26, groundY(0, -30) + 10, -30 + Math.cos(t) * 26);
+    camera.position.set(Math.sin(t) * 26, groundY(0, -30) + 9, -30 + Math.cos(t) * 26);
     camera.lookAt(0, groundY(0, -45) + 4, -45);
   }
 }
@@ -412,20 +411,20 @@ function step(dt) {
     updatePlaying(dt);
   } else if (G.state === 'crashed') {
     G.crashT += dt;
-    // 摔倒滑行减速 + 翻滚
     G.speed = Math.max(0, G.speed - 18 * dt);
     headingDir(_dir);
     G.pos.addScaledVector(_dir, G.speed * dt);
     G.pos.y = groundY(G.pos.x, G.pos.z);
     G.player.root.position.copy(G.pos);
     G.player.tumble(Math.min(G.crashT, 1.0));
-    if (G.crashT < 0.5) spray.emit(_tmp.copy(G.pos), _tmp2Set(0, 3, 2), 6, 2.5);
+    if (G.crashT < 0.5) spray.emit(_tmp.copy(G.pos), _tmp2Set(0, 3, 2), 8, 2.8, 0.8);
   }
 
   // 环境跟随
   const anchorZ = G.state === 'menu' ? -40 : G.pos.z;
-  sky.position.set(camera.position.x, camera.position.y, camera.position.z);
-  mountains.position.set(0, anchorZ * 0.3 /* 与坡度同步下降 */, anchorZ);
+  sky.position.copy(camera.position);
+  sky.material.uniforms.uTime.value = G.time;
+  mountains.position.set(0, anchorZ * SLOPE - 30, anchorZ);
   snowfall.update(camera.position, dt, G.time);
   spray.update(dt);
   for (const t of G.trails) t.fade(dt);
@@ -433,8 +432,9 @@ function step(dt) {
 
   // 太阳光跟随玩家保证阴影
   const lx = G.state === 'menu' ? 0 : G.pos.x;
-  sun.position.set(lx + 45, (G.state === 'menu' ? groundY(0, -40) : G.pos.y) + 60, anchorZ + 35);
-  sun.target.position.set(lx, G.state === 'menu' ? groundY(0, -40) : G.pos.y, anchorZ - 10);
+  const ly = G.state === 'menu' ? groundY(0, -40) : G.pos.y;
+  sun.position.set(lx + SUN_DIR.x * 90, ly + SUN_DIR.y * 90, anchorZ - 12 + SUN_DIR.z * 90);
+  sun.target.position.set(lx, ly, anchorZ - 12);
 
   updateCamera(dt);
   renderer.render(scene, camera);
@@ -453,5 +453,4 @@ loadModels()
 
 loop();
 
-// 调试钩子（开发环境手动步进/检查）
 window.__game = { renderer, scene, camera, G, startGame, step, keys };
